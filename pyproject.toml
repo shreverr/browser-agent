@@ -1,0 +1,21 @@
+[project]
+name = "browser-agent"
+version = "0.1.0"
+description = "A general-purpose browser agent built on Camoufox (Firefox), driven by any model via OpenRouter."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "camoufox[geoip]",
+    "openai>=1.40",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+browser-agent = "browser_agent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["browser_agent"]

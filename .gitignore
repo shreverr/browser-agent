@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+run-*.png
+*.log
+.profile/
