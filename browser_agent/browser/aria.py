@@ -15,8 +15,9 @@ actionable when it carries a ``[ref=eN]`` (Playwright grants one to any visible
 node that receives pointer events — including ``role=generic`` React onClick
 divs), which we act on via ``frame.locator("aria-ref=eN")``.
 
-``parse()`` -> nested tree of dicts; ``flatten()`` -> ordered list of our node
-model (``control`` / ``heading`` / ``text``).
+Pipeline: ``parse()`` -> nested tree of dicts; ``flatten()`` -> ordered list of
+our node model (``control`` / ``heading`` / ``text``); ``leaf()`` -> the one-line
+string the model reads for a control.
 """
 
 from __future__ import annotations
@@ -38,10 +39,11 @@ INTERACTIVE = {
     "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option",
     "slider", "spinbutton", "treeitem",
 }
-# Roles we fold into a `clickable` label when they become a control via cursor.
-_GENERIC = {"generic", "text", "img", "paragraph", "list", "listitem", "cell", "region"}
 # Container roles whose option children we roll up rather than list separately.
 _OPTION_CONTAINERS = {"combobox", "listbox", "menu"}
+
+MAX_NAME = 200  # a control label longer than this is truncated
+MAX_OPTIONS = 25  # options rolled up into a single combobox leaf
 
 
 def _attrs(s: str) -> dict:
@@ -97,7 +99,6 @@ def parse(text: str) -> list:
             "ref": a.get("ref") if isinstance(a.get("ref"), str) else None,
             "cursor_pointer": a.get("cursor") == "pointer",
             "box": _box(a.get("box")),
-            "level": int(a["level"]) if str(a.get("level", "")).isdigit() else 0,
             "disabled": bool(a.get("disabled")),
             "checked": a.get("checked"),
             "expanded": a.get("expanded"),
@@ -129,6 +130,7 @@ def _merged_text(node: dict) -> str:
 
 def _options(node: dict) -> list:
     out = []
+
     def walk(n):
         for c in n.get("children", []):
             if c["role"] == "option":
@@ -136,8 +138,9 @@ def _options(node: dict) -> list:
                 if lbl:
                     out.append(lbl)
             walk(c)
+
     walk(node)
-    return out[:25]
+    return out[:MAX_OPTIONS]
 
 
 def flatten(tree: list) -> list:
@@ -154,15 +157,16 @@ def flatten(tree: list) -> list:
 
         skip_option_kids = False
         if is_control:
-            disp_role = role if role in INTERACTIVE else "clickable"
             name = node.get("name") or node.get("inline") or _merged_text(node)
-            opts = _options(node) if role in _OPTION_CONTAINERS else []
             skip_option_kids = role in _OPTION_CONTAINERS
             out.append(
                 {
                     "kind": "control",
-                    "role": disp_role,
-                    "name": name.strip()[:200],
+                    # A ref'd node that is only clickable via cursor:pointer (a
+                    # div/row the site wired up itself) is presented as
+                    # `clickable` so the model treats it like a button.
+                    "role": role if role in INTERACTIVE else "clickable",
+                    "name": name.strip()[:MAX_NAME],
                     "ref": ref,
                     "box": node.get("box"),
                     "overlay": overlay,
@@ -170,17 +174,17 @@ def flatten(tree: list) -> list:
                     "checked": node.get("checked"),
                     "expanded": node.get("expanded"),
                     "selected": node.get("selected", False),
-                    "options": opts,
+                    "options": _options(node) if skip_option_kids else [],
                 }
             )
         elif role == "heading":
             nm = (node.get("name") or node.get("inline")).strip()
             if nm:
-                out.append({"kind": "heading", "level": node.get("level", 0), "name": nm, "overlay": overlay})
+                out.append({"kind": "heading", "name": nm, "overlay": overlay})
         elif role in ("alert", "status"):
             t = _merged_text(node)
             if t:
-                out.append({"kind": "text", "name": t[:200], "overlay": overlay})
+                out.append({"kind": "text", "name": t[:MAX_NAME], "overlay": overlay})
 
         for c in node.get("children", []):
             if skip_option_kids and c["role"] == "option":
@@ -190,3 +194,27 @@ def flatten(tree: list) -> list:
     for n in tree:
         walk(n, False)
     return out
+
+
+def leaf(n: dict) -> str:
+    """Render one control as the `[i] <text>` leaf the model reads, e.g.
+    `button "Save & Place Order" (disabled)` or `clickable "Home • 207 km …"`."""
+    s = f'{n.get("role", "")} "{n.get("name", "")}"'
+    states = []
+    if n.get("disabled"):
+        states.append("disabled")
+    if n.get("checked") in (True, "true", "mixed"):
+        states.append("checked")
+    expanded = n.get("expanded")
+    if expanded == "true":
+        states.append("expanded")
+    elif expanded == "false":
+        states.append("collapsed")
+    if n.get("selected"):
+        states.append("selected")
+    if states:
+        s += " (" + ", ".join(states) + ")"
+    options = n.get("options") or []
+    if options:
+        s += " | options=[" + " | ".join(options) + "]"
+    return s

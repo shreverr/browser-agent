@@ -102,14 +102,33 @@ a site still blocks you, in order of effectiveness:
 
 ## How it works
 
-| File                     | Role |
-| ------------------------ | ---- |
-| `browser_agent/aria.py`    | Parses Playwright's `aria_snapshot(mode="ai")` accessibility tree into the indexed control / heading / status-text nodes the model sees. |
-| `browser_agent/dom.py`     | Small in-page JS helpers the snapshot doesn't provide: top-overlay box, viewport size, and a label backfill for controls the tree leaves nameless. |
-| `browser_agent/browser.py` | Camoufox/Playwright wrapper: navigate, click, click_at, type, fill_form, scroll, back, read, screenshot. |
-| `browser_agent/agent.py`   | The OpenRouter tool-use loop. Defines the tools and drives the conversation. |
-| `browser_agent/cli.py`     | Entry point. |
-| `browser_agent/memory.py`  | Persistent user-facts store (`.profile/memory.json`). |
+```
+browser_agent/
+  cli.py               entry point: interactive REPL and one-shot mode
+  agent.py             the OpenRouter tool-use loop, and the confirmation /
+                       anti-repeat / supervisor guards wrapped around it
+  prompts.py           every string the model reads, incl. the compaction markers
+  config.py            every environment knob, and nothing else
+  memory.py            persistent user facts (.profile/memory.json)
+  tools/               the action surface — one module per group of tools
+    registry.py          tool() / declare() / execute(); the schema+body+flags dict
+    page.py              navigate, click, click_at, scroll, go_back
+    forms.py             type, fill_form, type_otp, select_option
+    read.py              read_page, get_html (read-only: no state refresh after)
+    meta.py              done, ask_user, remember, forget (the loop handles these)
+  browser/             everything that knows Playwright's and Camoufox's shapes
+    session.py           BrowserSession: the one object the tools act through
+    aria.py              parses aria_snapshot into the indexed nodes the model sees
+    dom.py               the few JS snippets that must run inside the page
+    playwright_patch.py  stops a malformed page error crashing the Firefox driver
+tests/                 plain-assert self-checks, no framework, no browser needed
+  test_aria.py           the snapshot parser
+  test_agent.py          page rendering, stuck detection, history compaction
+  test_tools.py          the registry's invariants
+```
+
+Imports point one way: `cli` → `agent` → `tools` → `browser`. `config` and
+`prompts` are leaves anyone may import.
 
 Each turn the model sees a compact **semantic outline** built from Playwright's
 computed accessibility tree (`aria_snapshot`, which works on Firefox unlike the
@@ -155,8 +174,36 @@ Environment variables (all optional):
 
 ## Extending
 
-Add a new capability by adding a method to `BrowserSession`, a tool definition in
-`browser_agent/agent.py`, and a branch in the `execute()` dispatch. Good
-candidates: file downloads, tab management, or attaching screenshots to give the
-model vision alongside the DOM.
-# browser-agent
+Where new code goes:
+
+| You are adding | Where it goes |
+| ---- | ---- |
+| A capability (a new tool) | One decorated function in the matching `tools/*.py`, plus a `BrowserSession` method in `browser/session.py` if it touches the page. Nothing else — `TOOLS`, `READ_TOOLS` and `AGENT_TOOLS` are derived from the registry. |
+| Text the model reads | `prompts.py`. Never inline a model-facing string at its use site. |
+| A configuration knob | `config.py`, plus a line in `.env.example`. No `os.environ` anywhere else. |
+| Playwright / Camoufox code | `browser/`. Nothing outside that package imports either library. |
+| A pure helper | Beside its only caller. Move it down a layer when a second caller appears. |
+| A test | `tests/test_<area>.py`, plain asserts under `__main__`, no framework. |
+
+A new tool is a schema and a body in one place:
+
+```python
+@tool("go_back", "Go back to the previous page.", {})
+def go_back(browser: BrowserSession, inp: dict[str, Any]) -> str:
+    return browser.back()
+```
+
+Two rules keep the layout from rotting. First, an import that points back up the
+chain — `browser` reaching for `agent`, say — means the code sits in the wrong
+layer: move the code, not the import. Second, past ~500 lines, split a file along
+the seams its comments already mark — `agent.py` divides into the loop and the
+guards, `browser/session.py` into perception and actions.
+
+Good candidates for a first tool: file downloads and tab management.
+
+Run the self-checks after touching perception, rendering, history compaction, or
+the tool list. They need no browser and no network:
+
+```bash
+for f in tests/test_*.py; do .venv/bin/python "$f" || break; done
+```

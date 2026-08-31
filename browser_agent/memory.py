@@ -1,18 +1,14 @@
 """Tiny persistent user-memory store (a flat key -> value JSON file).
 
-Mirrors src/memory.ts: facts the agent learns about the user (phone, address,
-UPI id, preferences, ...) persist across sessions at .profile/memory.json.
+Facts the agent learns about the user (phone, address, UPI id, preferences,
+...) persist across sessions at .profile/memory.json.
 """
 
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 
-MEMORY_FILE = Path(os.environ.get("AGENT_MEMORY_FILE", ".profile/memory.json"))
-
-# A UserMemory is just a dict[str, str].
+from .config import MEMORY_FILE
 
 
 def load_memory() -> dict[str, str]:

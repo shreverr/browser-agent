@@ -19,16 +19,14 @@ from typing import TypedDict
 
 
 class ElementInfo(TypedDict, total=False):
+    """One node of the page as the model sees it. Controls carry `index`, `text`
+    and `box`; headings and status text carry only `name`."""
+
     kind: str  # "control" | "heading" | "text"
-    ref: str  # aria-ref id (eN) for controls
-    index: int  # global index, assigned Python-side
-    tag: str
+    index: int  # global index the model acts by, assigned Python-side
     role: str  # button/link/textbox/checkbox/radio/combobox/clickable/...
-    type: str
     name: str  # label (from aria, or LABEL_JS backfill)
     text: str  # rendered leaf string, e.g. button "Save & Place Order"
-    group: str
-    level: int  # heading level
     overlay: bool  # inside a modal/popup/overlay that is likely blocking the page
     box: object  # (x, y, w, h) viewport CSS px, from the aria snapshot
 
@@ -70,8 +68,9 @@ VIEWPORT_SCRIPT = "() => ({ w: window.innerWidth, h: window.innerHeight })"
 
 # Compact label resolver for the few controls the aria snapshot leaves nameless
 # (icon buttons with no aria-name, inputs with only name=/id=). Applied per
-# element via `frame.locator("aria-ref=eN").evaluate(LABEL_JS)` — reuses the same
-# signal cascade as resolveLabel below.
+# element via `frame.locator("aria-ref=eN").evaluate(LABEL_JS)`. The cascade runs
+# most-authoritative first: aria-label, aria-labelledby, <label>, own text,
+# value/placeholder/title, icon hints, then name/id/data-* as a last resort.
 LABEL_JS = r"""(el) => {
   const clip = s => (s||'').replace(/\s+/g,' ').trim().slice(0,120);
   const hum = s => (s||'').replace(/[_\-]+/g,' ').replace(/([a-z0-9])([A-Z])/g,'$1 $2').replace(/\s+/g,' ').trim().toLowerCase();

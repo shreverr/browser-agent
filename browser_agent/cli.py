@@ -1,4 +1,4 @@
-"""Entry point. Ported from src/cli.ts.
+"""Entry point.
 
 Interactive REPL (no args) or one-shot mode (task passed as arguments). The
 `ask()` bridge (via input()) serves both the main prompt and the agent's
@@ -7,10 +7,10 @@ mid-task `ask_user` / CAPTCHA pauses.
 
 from __future__ import annotations
 
-import os
 import sys
 
 from .agent import Agent
+from .config import API_KEY, HEADLESS
 
 BANNER = """
 ┌────────────────────────────────────────────┐
@@ -30,7 +30,7 @@ Defaults to Indian context (₹ INR, amazon.in, google.co.in) unless you say oth
 
 
 def preflight() -> None:
-    if not os.environ.get("OPENROUTER_API_KEY"):
+    if not API_KEY:
         print(
             "OPENROUTER_API_KEY is not set. Add it to .env (see .env.example) or your shell.",
             file=sys.stderr,
@@ -39,8 +39,8 @@ def preflight() -> None:
 
 
 def ask(question: str) -> str:
-    """Async question function used for both the main prompt and the agent's
-    mid-task `ask_user` calls."""
+    """Prompt the human. Serves the agent's mid-task `ask_user` calls, the
+    CAPTCHA pause, and the confirmation guard."""
     try:
         return input(f"\n🤔 {question}\n   ❯ ")
     except EOFError:
@@ -48,9 +48,8 @@ def ask(question: str) -> str:
 
 
 def one_shot(task: str) -> None:
-    headless = os.environ.get("HEADLESS") == "true"
     agent = Agent()
-    agent.start(headless)
+    agent.start(HEADLESS)
     print(f"\n🎯 Task: {task}\n")
     try:
         answer = agent.run(task, ask)
@@ -61,9 +60,8 @@ def one_shot(task: str) -> None:
 
 def interactive() -> None:
     # Interactive mode shows the browser by default so you can watch it work.
-    headless = os.environ.get("HEADLESS") == "true"
     agent = Agent()
-    agent.start(headless)
+    agent.start(HEADLESS)
 
     print(BANNER)
 

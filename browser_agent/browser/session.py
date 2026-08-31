@@ -1,97 +1,33 @@
 """Camoufox (Firefox) browser wrapper.
 
-Ported from src/browser.ts. Camoufox is a hardened Firefox build with
-anti-fingerprinting baked into the binary, so it replaces the old
-playwright-extra + puppeteer-extra-plugin-stealth stack entirely — no stealth
-plugin is wired in here.
+Camoufox is a hardened Firefox build with anti-fingerprinting baked into the
+binary, so no stealth plugin is wired in here.
 
-The public method names / return-string contracts match the TS version because
-the agent loop depends on them.
+Perception lives in `aria.py`: every turn `get_state()` walks Playwright's
+computed accessibility tree per frame, turns each ref'd node into an indexed
+control, and records where that control lives so actions can reach it — even
+inside a cross-origin iframe.
 """
 
 from __future__ import annotations
 
 import base64
-import os
 import re
-from pathlib import Path
 from typing import Optional, TypedDict
 from urllib.parse import urlparse
 
 from camoufox.sync_api import Camoufox
 
-from . import aria
+from ..config import ALLOWED_DOMAINS, STATE_FILE
+from . import aria, playwright_patch
 from .dom import LABEL_JS, OVERLAY_RECT_SCRIPT, VIEWPORT_SCRIPT, ElementInfo
 
-# Persist cookies + localStorage across runs so a one-time human/CAPTCHA check
-# (e.g. Cloudflare clearance) or login carries over to later sessions.
-STATE_FILE = Path(os.environ.get("AGENT_STATE_FILE", ".profile/state.json"))
+# STATE_FILE persists cookies + localStorage across runs, so a one-time
+# human/CAPTCHA check (e.g. Cloudflare clearance) or login carries over.
+# ALLOWED_DOMAINS, when non-empty, is the navigation boundary `navigate()` enforces.
 
-# Optional deterministic safety boundary: restrict navigation to these domains
-# (comma-separated in AGENT_ALLOWED_DOMAINS). Empty = unrestricted.
-ALLOWED_DOMAINS = [
-    d.strip().lower() for d in os.environ.get("AGENT_ALLOWED_DOMAINS", "").split(",") if d.strip()
-]
-
-
-# Original (buggy) Firefox page-error dispatch in Playwright's bundled driver.
-# When a page throws an uncaught JS error whose `location` is undefined (some
-# sites, e.g. Swiggy Instamart, do this), the driver runs `pageError.location.url`
-# and crashes the whole Node driver process — killing the agent mid-task.
-_PAGEERROR_ORIG = (
-    '        this.addObjectListener(BrowserContext.Events.PageError, (pageError, page) => {\n'
-    '          this._dispatchEvent("pageError", {\n'
-    "            error: serializeError(pageError.error),\n"
-    "            page: PageDispatcher.from(this, page),\n"
-    "            location: {\n"
-    "              url: pageError.location.url,\n"
-    "              line: pageError.location.lineNumber,\n"
-    "              column: pageError.location.columnNumber\n"
-    "            }\n"
-    "          });\n"
-    "        });"
-)
-# Fixed: omit `location` when absent (else it fails the driver's string-type
-# validation), and wrap the whole dispatch so no malformed page error can ever
-# crash the driver.
-_PAGEERROR_FIXED = (
-    '        this.addObjectListener(BrowserContext.Events.PageError, (pageError, page) => {\n'
-    "          try {\n"
-    '            this._dispatchEvent("pageError", {\n'
-    "              error: serializeError(pageError.error),\n"
-    "              page: PageDispatcher.from(this, page),\n"
-    "              location: pageError.location ? {\n"
-    "                url: pageError.location.url,\n"
-    "                line: pageError.location.lineNumber,\n"
-    "                column: pageError.location.columnNumber\n"
-    "              } : undefined\n"
-    "            });\n"
-    "          } catch (e) {}\n"
-    "        });"
-)
-
-
-def _patch_playwright_firefox_pageerror() -> None:
-    """Make the Playwright Firefox page-error dispatch crash-proof. Idempotent
-    and best-effort (a failure just leaves the original behaviour)."""
-    try:
-        import playwright
-
-        bundle = (
-            Path(playwright.__file__).resolve().parent
-            / "driver" / "package" / "lib" / "coreBundle.js"
-        )
-        text = bundle.read_text(encoding="utf-8")
-        if "location: pageError.location ?" in text:
-            return  # already patched
-        # Handle a fresh install (original) or the earlier null-safe intermediate.
-        intermediate = _PAGEERROR_ORIG.replace("pageError.location.", "pageError.location?.")
-        for src in (_PAGEERROR_ORIG, intermediate):
-            if src in text:
-                bundle.write_text(text.replace(src, _PAGEERROR_FIXED), encoding="utf-8")
-                return
-    except Exception:
-        pass
+MAX_CONTROLS = 150  # cap the element list per turn
+MAX_LABEL_BACKFILLS = 25  # cap the per-turn DOM lookups for nameless controls
 
 
 class PageState(TypedDict):
@@ -104,30 +40,6 @@ class PageState(TypedDict):
 class _Target(TypedDict):
     frame: object  # playwright Frame
     ref: str  # aria-ref id (eN) from that frame's latest aria_snapshot
-
-
-def _leaf(n: dict) -> str:
-    """Render one control as the `[i] <text>` leaf the model reads, e.g.
-    `button "Save & Place Order" (disabled)` or `clickable "Home • 207 km …"`."""
-    s = f'{n.get("role", "")} "{n.get("name", "")}"'
-    st = []
-    if n.get("disabled"):
-        st.append("disabled")
-    if n.get("checked") in (True, "true", "mixed"):
-        st.append("checked")
-    exp = n.get("expanded")
-    if exp == "true":
-        st.append("expanded")
-    elif exp == "false":
-        st.append("collapsed")
-    if n.get("selected"):
-        st.append("selected")
-    if st:
-        s += " (" + ", ".join(st) + ")"
-    opts = n.get("options") or []
-    if opts:
-        s += " | options=[" + " | ".join(opts) + "]"
-    return s
 
 
 def _in_rect(box, rect) -> bool:
@@ -159,15 +71,13 @@ class BrowserSession:
         self.context = None
         self.page = None
         # Maps the global element index shown to the model -> the frame it lives
-        # in and its local index within that frame. Lets actions reach elements
-        # inside iframes.
+        # in and its aria-ref within that frame. Lets actions reach elements
+        # inside iframes. Rebuilt by every get_state().
         self._targets: list[_Target] = []
-        # Bumped every get_state(); used to detect stale refs during batched fills.
-        self._snapshot_version = 0
 
     def launch(self, headless: bool) -> None:
         # Heal a Playwright Firefox driver crash before the driver spawns.
-        _patch_playwright_firefox_pageerror()
+        playwright_patch.apply()
         # Camoufox handles anti-fingerprinting natively. locale is set at the
         # Camoufox level so the spoofed fingerprint stays internally consistent;
         # geoip is off since no proxy is in use. humanize gives natural cursor
@@ -216,11 +126,28 @@ class BrowserSession:
         # divs, shadow DOM, and cross-origin iframes alike.
         return t["frame"].locator(f'aria-ref={t["ref"]}')
 
+    def _snapshot_frames(self):
+        """The frames worth snapshotting: the main document plus any frame that is
+        cross-origin to its parent (e.g. a consent/cookie wall). A frame's
+        aria_snapshot already includes its SAME-origin children, so including
+        those would count their content twice."""
+        for frame in self.page.frames:
+            parent = frame.parent_frame
+            if parent is None or _origin(frame.url) != _origin(parent.url):
+                yield frame
+
+    def _label_backfill(self, frame, ref: str) -> str:
+        """Resolve a name for the few controls aria leaves nameless (icon buttons,
+        name/id-only inputs) by asking the DOM element itself."""
+        try:
+            return frame.locator(f"aria-ref={ref}").evaluate(LABEL_JS) or ""
+        except Exception:
+            return ""
+
     def get_state(self) -> PageState:
         elements: list[ElementInfo] = []  # controls only (the action surface)
         nodes: list[ElementInfo] = []  # ordered controls + headings + text
         self._targets = []
-        self._snapshot_version += 1
 
         # A blocking modal may have no role=dialog, so also find the top overlay's
         # box and flag controls that fall inside it (main frame only).
@@ -233,70 +160,42 @@ class BrowserSession:
         except Exception:
             pass
         main_frame = self.page.main_frame
-        backfills = 0  # capped per-turn label lookups for nameless controls
+        backfills = 0
 
-        # Perceive via Playwright's computed accessibility tree, per frame (main
-        # doc + iframes, incl. cross-origin consent/cookie walls). Every ref'd
-        # node becomes an indexed control; ``_targets`` maps the global index to
-        # that frame + aria-ref so actions can reach it (even inside iframes).
-        for frame in self.page.frames:
-            # A frame's aria_snapshot already includes its SAME-origin child
-            # iframes, so only snapshot the main frame plus frames that are
-            # cross-origin to their parent (e.g. a consent/cookie wall) — else
-            # same-origin iframe content gets counted twice.
-            parent = frame.parent_frame
-            if parent is not None and _origin(frame.url) == _origin(parent.url):
-                continue
+        for frame in self._snapshot_frames():
             try:
                 snap = frame.locator("body").aria_snapshot(mode="ai", boxes=True)
             except Exception:
                 continue  # detached / not-yet-loaded / no body
-            in_viewport = frame is main_frame and vw and vh
+            # aria_snapshot isn't viewport-limited; keep the outline to what's on
+            # screen. Only the main frame is filtered — iframe boxes are in their
+            # own coordinate space.
+            clip_to_viewport = frame is main_frame and vw and vh
+
             for n in aria.flatten(aria.parse(snap)):
-                if n["kind"] == "control":
-                    if len(elements) >= 150:
-                        continue
-                    # aria_snapshot isn't viewport-limited; keep the outline to
-                    # what's on screen (main frame; iframe boxes use their own
-                    # coord space so we keep those). Boxless controls are kept.
-                    box = n.get("box")
-                    if in_viewport and box and not _intersects_viewport(box, vw, vh):
-                        continue
-                    # Backfill a label for the few controls aria leaves nameless
-                    # (icon buttons, name/id-only inputs) using the DOM element.
-                    if not n.get("name") and backfills < 25:
-                        backfills += 1
-                        try:
-                            nm = frame.locator(f"aria-ref={n['ref']}").evaluate(LABEL_JS)
-                            if nm:
-                                n["name"] = nm
-                        except Exception:
-                            pass
-                    ov = bool(n.get("overlay")) or _in_rect(n.get("box"), overlay_rect)
-                    ctrl: ElementInfo = {
-                        "kind": "control",
-                        "index": len(elements),
-                        "tag": "",
-                        "role": n.get("role", ""),
-                        "type": "",
-                        "name": n.get("name", ""),
-                        "text": _leaf(n),
-                        "group": "",
-                        "overlay": ov,
-                        "box": n.get("box"),
-                    }
-                    elements.append(ctrl)
-                    nodes.append(ctrl)  # same dict — shared so render sees the global index
-                    self._targets.append({"frame": frame, "ref": n["ref"]})
-                else:  # heading / status text
-                    nodes.append(
-                        {
-                            "kind": n["kind"],
-                            "level": n.get("level", 0),
-                            "name": n.get("name", ""),
-                            "overlay": n.get("overlay", False),
-                        }
-                    )
+                if n["kind"] != "control":  # heading / status text
+                    nodes.append({"kind": n["kind"], "name": n.get("name", ""), "overlay": n.get("overlay", False)})
+                    continue
+                if len(elements) >= MAX_CONTROLS:
+                    continue
+                box = n.get("box")
+                if clip_to_viewport and box and not _intersects_viewport(box, vw, vh):
+                    continue
+                if not n.get("name") and backfills < MAX_LABEL_BACKFILLS:
+                    backfills += 1
+                    n["name"] = self._label_backfill(frame, n["ref"]) or n["name"]
+                ctrl: ElementInfo = {
+                    "kind": "control",
+                    "index": len(elements),
+                    "role": n.get("role", ""),
+                    "name": n.get("name", ""),
+                    "text": aria.leaf(n),
+                    "overlay": bool(n.get("overlay")) or _in_rect(box, overlay_rect),
+                    "box": box,
+                }
+                elements.append(ctrl)
+                nodes.append(ctrl)  # same dict — shared so render sees the global index
+                self._targets.append({"frame": frame, "ref": n["ref"]})
         try:
             title = self.page.title()
         except Exception:
@@ -341,17 +240,28 @@ class BrowserSession:
         self._settle()
         return f"Clicked at ({int(x)}, {int(y)})"
 
-    def type(self, index: int, text: str, submit: bool) -> str:
-        el = self._locator(index)
+    def _enter_text(self, el, text: str) -> None:
         el.scroll_into_view_if_needed(timeout=5000)
         el.click(timeout=8000)
         el.fill("")  # clear any existing value
         el.press_sequentially(text, delay=20)
+
+    def type(self, index: int, text: str, submit: bool) -> str:
+        el = self._locator(index)
+        self._enter_text(el, text)
         if submit:
             el.press("Enter")
             self._settle()
             return f'Typed "{text}" into [{index}] and pressed Enter'
         return f'Typed "{text}" into [{index}]'
+
+    # <input> types that are not text entry — never filled, never clicked.
+    _NONTEXT_INPUTS = ("button", "submit", "reset", "checkbox", "radio", "file", "image")
+    _FIELD_INFO_JS = (
+        "e => ({tag: (e.tagName||'').toLowerCase(), "
+        "type: (e.getAttribute && (e.getAttribute('type')||'')).toLowerCase(), "
+        "editable: e.isContentEditable === true})"
+    )
 
     def fill_form(self, fields: list) -> str:
         """Fill several fields in ONE call — much faster than one `type` per turn.
@@ -379,31 +289,23 @@ class BrowserSession:
                     )
                     break
                 # Only ever touch text-entry fields. Refuse buttons/links/etc.
-                # WITHOUT clicking them — otherwise the focus-click below would
-                # fire a button (e.g. "Place Order"), bypassing the click path's
-                # confirmation guard. The model must `click` those separately.
-                info = el.evaluate(
-                    "e => ({tag: (e.tagName||'').toLowerCase(), "
-                    "type: (e.getAttribute && (e.getAttribute('type')||'')).toLowerCase(), "
-                    "editable: e.isContentEditable === true})"
-                )
-                _NONTEXT = ("button", "submit", "reset", "checkbox", "radio", "file", "image")
+                # WITHOUT clicking them — otherwise the focus-click in _enter_text
+                # would fire a button (e.g. "Place Order"), bypassing the click
+                # path's confirmation guard. The model must `click` those separately.
+                info = el.evaluate(self._FIELD_INFO_JS)
                 fillable = (
                     info["editable"]
                     or info["tag"] == "textarea"
-                    or (info["tag"] == "input" and info["type"] not in _NONTEXT)
+                    or (info["tag"] == "input" and info["type"] not in self._NONTEXT_INPUTS)
                 )
                 if not fillable:
-                    kind = info["tag"] or "element"
                     done.append(
-                        f"[{idx}] is a <{kind}>, not a text field — skipped (not filled or clicked). "
-                        "Use `click` for buttons/links, or `select_option` for dropdowns."
+                        f"[{idx}] is a <{info['tag'] or 'element'}>, not a text field — skipped "
+                        "(not filled or clicked). Use `click` for buttons/links, or "
+                        "`select_option` for dropdowns."
                     )
                     continue
-                el.scroll_into_view_if_needed(timeout=5000)
-                el.click(timeout=8000)
-                el.fill("")
-                el.press_sequentially(text, delay=20)
+                self._enter_text(el, text)
                 if submit:
                     el.press("Enter")
                     self._settle()
@@ -421,8 +323,7 @@ class BrowserSession:
         el.scroll_into_view_if_needed(timeout=5000)
         el.click(timeout=8000)
         # Type each character with a short delay. Most OTP inputs auto-advance
-        # focus on each keystroke so the subsequent digits land in the right
-        # boxes.
+        # focus on each keystroke so the subsequent digits land in the right boxes.
         for ch in code:
             self.page.keyboard.type(ch, delay=60)
             self.page.wait_for_timeout(50)
@@ -452,11 +353,8 @@ class BrowserSession:
         return "Went back"
 
     def read_page_text(self) -> str:
-        text = self.page.evaluate(
-            "() => document.body ? document.body.innerText : ''"
-        )
-        text = re.sub(r"\n{3,}", "\n\n", text or "").strip()
-        return text[:8000]
+        text = self.page.evaluate("() => document.body ? document.body.innerText : ''")
+        return re.sub(r"\n{3,}", "\n\n", text or "").strip()[:8000]
 
     def read_html(self) -> str:
         # Cleaned, truncated HTML — a richer fallback view when the labeled-
@@ -484,24 +382,19 @@ class BrowserSession:
     )
 
     def detect_captcha(self) -> bool:
-        # Detect an ACTIVE human-verification challenge (not a passive invisible
-        # reCAPTCHA badge): a Cloudflare/"are you human" interstitial, or a
-        # visibly sized captcha-provider iframe the user must interact with.
+        """Is an ACTIVE human-verification challenge up? A Cloudflare / "are you
+        human" interstitial, or a visibly sized captcha-provider iframe the user
+        must interact with — not a passive invisible reCAPTCHA badge."""
         for f in self.page.frames:
-            # 1) interstitial / challenge text
             try:
-                text = f.evaluate(
-                    "() => document.body ? document.body.innerText.slice(0, 2000) : ''"
-                )
+                text = f.evaluate("() => document.body ? document.body.innerText.slice(0, 2000) : ''")
                 if self._CAPTCHA_PHRASES.search(text or ""):
                     return True
             except Exception:
                 pass  # cross-origin race / detached
-            # 2) a visibly sized captcha-provider iframe
             if f is not self.page.main_frame and self._CAPTCHA_PROVIDERS.search(f.url):
                 try:
-                    el = f.frame_element()
-                    box = el.bounding_box()
+                    box = f.frame_element().bounding_box()
                     if box and box["width"] > 80 and box["height"] > 50:
                         return True
                 except Exception:
