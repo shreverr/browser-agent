@@ -18,6 +18,9 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.13.1",
 ]
+analysis = [
+    "pyyaml>=6.0",
+]
 
 [project.scripts]
 browser-agent = "browser_agent.cli:main"
