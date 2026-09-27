@@ -278,9 +278,9 @@ tasks:
     sites: [github.com]
     memory: *base_memory
 
-  - id: gap-playwright-bug-count
+  - id: gap-flask-bug-count
     cell: {code: G5, cluster: gap, intent: navigation, horizon: medium, interaction: [filters, pagination], mode: D, stability: volatile}
-    text: "How many open issues labelled 'bug' does microsoft/playwright have on GitHub right now?"
+    text: "How many open issues labelled 'bug' does pallets/flask have on GitHub right now?"
     sites: [github.com]
     memory: *base_memory
 
