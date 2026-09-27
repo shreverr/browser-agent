@@ -18,17 +18,25 @@ import datetime as dt
 import enum
 import hashlib
 import json
+import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from ... import prompts
-from ...agent import Agent, render_state
+from ...agent import Agent, _control_text, render_state
 from ...browser import ActionResult, BrowserAction, Observation
+from ...config import CONFIRM_KEYWORDS
 
 SCHEMA_VERSION = "ea-1"
 INLINE_LIMIT = 64 * 1024
+# Research #36 T19: the default gate misses the labels these live sites use.
+EXTRA_CONFIRM_WORDS = (
+    "book now", "reserve", "add to cart", "proceed to buy", "checkout",
+    "continue to payment", "send", "submit", "post",
+)  # fmt: skip
+CONFIRM_WORDS = tuple(dict.fromkeys([*CONFIRM_KEYWORDS, *EXTRA_CONFIRM_WORDS]))
 
 
 def _now() -> str:
@@ -309,6 +317,31 @@ class RecordingAgent(Agent):
             self.trace.emit("tool_call", call_id=call["id"], name=call["name"], arguments=arguments)
 
     # --- agent hooks ---------------------------------------------------------
+
+    @staticmethod
+    def _confirm_target(name: str, inp: dict[str, Any], state: Observation) -> str | None:
+        """Analysis-only gate: word-boundary keywords, and `type(submit=true)` gated too."""
+        if name == "type" and inp.get("submit") or name == "click":
+            indices = [inp.get("index")]
+        elif name == "fill_form":
+            indices = [
+                field.get("index")
+                for field in inp.get("fields") or []
+                if isinstance(field, dict) and field.get("submit")
+            ]
+        else:
+            return None
+        for value in indices:
+            try:
+                index = int(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= index < len(state.controls):
+                continue
+            label = _control_text(state.controls[index])
+            if any(re.search(rf"\b{re.escape(word)}\b", label, re.I) for word in CONFIRM_WORDS):
+                return label
+        return None
 
     def _compact_history(self) -> None:
         before = [message.get("content") for message in self.messages]

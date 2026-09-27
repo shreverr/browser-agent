@@ -156,3 +156,51 @@ async def test_verification_challenge_ends_trial_as_captcha_infra(tmp_path: Path
     assert header["status"] == "infra_error"
     assert header["infra"]["class"] == "captcha"
     assert events(trial_dir)[-1]["type"] == "trial_end"
+
+
+def test_relative_dates_resolve_at_trial_time() -> None:
+    import datetime as dt
+
+    from browser_agent.evals.analysis.dates import resolve_task
+
+    today = dt.date(2026, 9, 27)  # a Sunday
+    task = resolve_task(
+        {
+            "id": "d",
+            "text": "Arrive {second_friday_next_month}, leave {today+2d}; {next_saturday}; {today+14m}",
+            "replies": [{"id": "r", "match": "when", "reply": "{last_sunday_next_month}"}],
+        },
+        today,
+    )
+    assert "Friday 9 October 2026" in task["text"]
+    assert "Tuesday 29 September 2026" in task["text"]
+    assert "Saturday 3 October 2026" in task["text"]
+    assert "27 November 2027" in task["text"]
+    assert task["replies"][0]["reply"] == "Sunday 25 October 2026"
+    assert task["text_template"].startswith("Arrive {second_friday_next_month}")
+
+
+def test_analysis_gate_uses_word_boundaries_and_gates_submit_typing() -> None:
+    from browser_agent.evals.analysis.capture import RecordingAgent
+
+    base = observation(3)
+    labels = ["Add to Cart", "Postcode", "Search", "Reserve"]
+    page = Observation(
+        base.observation_id,
+        base.active_target_id,
+        base.url,
+        base.title,
+        base.document_generation,
+        base.frame_generations,
+        base.viewport,
+        controls=tuple(
+            SemanticControl(TargetHandle(base.observation_id, f"c{i}"), "button", label)
+            for i, label in enumerate(labels)
+        ),
+    )
+    gate = RecordingAgent._confirm_target
+    assert gate("click", {"index": 0}, page) is not None
+    assert gate("click", {"index": 1}, page) is None
+    assert gate("type", {"index": 3, "text": "x", "submit": True}, page) is not None
+    assert gate("type", {"index": 3, "text": "x"}, page) is None
+    assert gate("click", {"index": 2}, page) is None

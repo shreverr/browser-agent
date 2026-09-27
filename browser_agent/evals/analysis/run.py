@@ -34,7 +34,15 @@ from ...browser import BrowserAction, BrowserAdapterError, BrowserConfig, Nodriv
 from ...config import CHECK_EVERY, CHECKER_MODEL, HEADLESS, MAX_STEPS, MODEL, VISION
 from ...state import CapturePolicy, EpisodeMetadata, LocalArtifactStore, LocalBrowserStateAdapter
 from ...tools import TOOLS
-from .capture import SCHEMA_VERSION, BlobStore, CaptchaEncountered, RecordingAgent, TraceWriter
+from .capture import (
+    CONFIRM_WORDS,
+    SCHEMA_VERSION,
+    BlobStore,
+    CaptchaEncountered,
+    RecordingAgent,
+    TraceWriter,
+)
+from .dates import resolve_task
 
 ROOT = Path(".evals")
 INFRA_RETRIES = 2
@@ -74,6 +82,17 @@ def context_lengths() -> dict[str, int]:
         }
     except Exception:
         return {}
+
+
+IP_COUNTRY: str | None = None
+
+
+def ip_country() -> str | None:
+    try:
+        with urllib.request.urlopen("https://ipinfo.io/country", timeout=10) as response:
+            return response.read().decode().strip() or None
+    except Exception:
+        return None
 
 
 class SimulatedUser:
@@ -223,6 +242,8 @@ def base_header(
         "task": {
             "id": task["id"],
             "text": task["text"],
+            "text_template": task.get("text_template", task["text"]),
+            "resolved_on": task.get("resolved_on"),
             "start_url": task.get("start_url"),
             "sites": task.get("sites") or [],
             "cell": task.get("cell") or {},
@@ -235,12 +256,18 @@ def base_header(
             "max_steps": MAX_STEPS,
             "check_every": CHECK_EVERY,
             "vision": VISION,
+            "confirm_keywords": list(CONFIRM_WORDS),
             "system_prompt_ref": blobs.text(system),
             "tools_ref": blobs.json(TOOLS),
         },
         "initial_memory": task.get("memory") or {},
         "simulated_user": task.get("replies") or [],
-        "environment": {"os": platform.platform(), "chrome_version": None, "headless": HEADLESS},
+        "environment": {
+            "os": platform.platform(),
+            "chrome_version": None,
+            "headless": HEADLESS,
+            "ip_country": IP_COUNTRY,
+        },
         "started_at": _now(),
         "ended_at": None,
         "status": "running",
@@ -269,7 +296,10 @@ async def main_async(args: argparse.Namespace) -> int:
     batch_dir = ROOT / "error-analysis" / args.batch_id
     blobs = BlobStore(ROOT / "blobs")
     lengths = context_lengths()
+    global IP_COUNTRY
+    IP_COUNTRY = ip_country()
     for task in tasks:
+        task = resolve_task(task, dt.date.today())
         for k in range(1, args.trials + 1):
             for attempt in range(1, INFRA_RETRIES + 2):
                 trial_id = f"{task['id']}.t{k}.a{attempt}"
