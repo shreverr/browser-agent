@@ -1,0 +1,57 @@
+<!doctype html>
+<!--
+  Error-analysis annotation viewer (shreverr/browser-agent#32). Vanilla JS, no build step.
+  Trace layout ported from the prototype's winning layout D (branch prototype/trace-viewer-report).
+  Everything from a Trace is untrusted live-web text: app.js escapes it before it touches the DOM,
+  and the server's CSP forbids inline script and style.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="no-referrer" />
+<title>Error analysis · annotate</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="/static/app.css" />
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <b class="brand">Error analysis</b>
+  <span id="summary" class="muted small" aria-live="polite"></span>
+  <span class="spacer"></span>
+  <span id="live" class="live off" title="live updates">offline</span>
+  <span id="whoami" class="small"></span>
+  <button id="theme" type="button" title="theme: auto follows the OS">theme: auto</button>
+  <button id="signout" type="button" hidden>sign out</button>
+</header>
+
+<nav class="tabs-mobile" role="tablist" aria-label="Panels">
+  <button type="button" role="tab" data-mtab="trials">Trials</button>
+  <button type="button" role="tab" data-mtab="trace">Trace</button>
+  <button type="button" role="tab" data-mtab="note">Note</button>
+  <button type="button" role="tab" data-mtab="taxonomy">Taxonomy</button>
+</nav>
+
+<main id="app" class="layout" hidden>
+  <section id="list-col" class="col" aria-label="Trials">
+    <div id="filters" class="filters"></div>
+    <div id="trial-list" role="list"></div>
+  </section>
+  <section id="trace-col" class="col" aria-label="Trace">
+    <div id="trace"><p class="muted pad">Pick a Trial to read its Trace.</p></div>
+  </section>
+  <section id="side-col" class="col" aria-label="Note and taxonomy">
+    <div class="side-tabs" role="tablist" aria-label="Side panel">
+      <button type="button" role="tab" data-stab="note">Note</button>
+      <button type="button" role="tab" data-stab="taxonomy">Taxonomy</button>
+    </div>
+    <div id="note-pane" class="pane"></div>
+    <div id="tax-pane" class="pane"></div>
+  </section>
+</main>
+
+<div id="gate" class="gate" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
