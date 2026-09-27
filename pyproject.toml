@@ -11,8 +11,25 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+# Collaborative annotation server for error analysis (browser_agent/evals/annotate).
+# Kept out of the core agent's dependencies: `uv sync --extra annotate`.
+annotate = [
+    "alembic>=1.13",
+    "boto3>=1.34",
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "itsdangerous>=2.1",
+    "psycopg[binary]>=3.2",
+    "python-multipart>=0.0.9",
+    "pyyaml>=6.0",
+    "sqlalchemy>=2.0.30",
+    "uvicorn>=0.30",
+]
+
 [dependency-groups]
 dev = [
+    "browser-agent[annotate]",
     "pyright>=1.1.405",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.4.0",
@@ -21,6 +38,7 @@ dev = [
 
 [project.scripts]
 browser-agent = "browser_agent.cli:main"
+browser-agent-annotate = "browser_agent.evals.annotate.cli:main"
 
 [build-system]
 requires = ["hatchling"]
