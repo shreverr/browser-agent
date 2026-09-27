@@ -1,0 +1,52 @@
+# Local development: Postgres stands in for Neon, MinIO for Cloudflare R2.
+#   docker compose -f browser_agent/evals/annotate/docker-compose.yml up --build
+# Then open http://localhost:8000 (signs you in as ANNOTATE_DEV_LOGIN, no GitHub needed).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: annotate
+      POSTGRES_PASSWORD: annotate
+      POSTGRES_DB: annotate
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U annotate"]
+      interval: 2s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["9000:9000", "9001:9001"]
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      sh -c "until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done;
+             mc mb --ignore-existing local/traces"
+
+  app:
+    build:
+      context: ../../..
+      dockerfile: browser_agent/evals/annotate/Dockerfile
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+    ports: ["8000:8000"]
+    environment:
+      ANNOTATE_BASE_URL: http://localhost:8000
+      ANNOTATE_DATABASE_URL: postgresql://annotate:annotate@postgres:5432/annotate
+      ANNOTATE_S3_ENDPOINT_URL: http://minio:9000
+      ANNOTATE_S3_BUCKET: traces
+      ANNOTATE_S3_ACCESS_KEY_ID: minioadmin
+      ANNOTATE_S3_SECRET_ACCESS_KEY: minioadmin
+      ANNOTATE_S3_REGION: us-east-1
+      ANNOTATE_ALLOWED_GITHUB: ${ANNOTATE_DEV_LOGIN:-dev}
+      ANNOTATE_DEV_LOGIN: ${ANNOTATE_DEV_LOGIN:-dev}
+      ANNOTATE_SESSION_SECRET: local-dev-session-secret-not-for-prod
+      ANNOTATE_UPLOAD_TOKEN: local-dev-upload-token-not-for-prod
+      ANNOTATE_COOKIE_SECURE: "false"

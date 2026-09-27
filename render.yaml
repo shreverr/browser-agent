@@ -1,0 +1,40 @@
+# Render Blueprint for the error-analysis annotation server (browser_agent/evals/annotate).
+# Postgres lives on Neon and Trace files on Cloudflare R2, so this is just one web service.
+# Values marked `sync: false` are prompted for when the Blueprint is created; see
+# browser_agent/evals/annotate/README.md for where each one comes from.
+services:
+  - type: web
+    name: browser-agent-annotate
+    runtime: docker
+    dockerfilePath: ./browser_agent/evals/annotate/Dockerfile
+    dockerContext: .
+    plan: free # free instances sleep when idle (about a minute to wake); starter keeps it warm
+    region: oregon
+    numInstances: 1 # live updates use an in-process broadcaster: keep exactly one instance
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: ANNOTATE_BASE_URL
+        sync: false # e.g. https://browser-agent-annotate.onrender.com
+      - key: ANNOTATE_DATABASE_URL
+        sync: false # Neon connection string (pooled), postgresql://…?sslmode=require
+      - key: ANNOTATE_S3_ENDPOINT_URL
+        sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: ANNOTATE_S3_BUCKET
+        sync: false
+      - key: ANNOTATE_S3_ACCESS_KEY_ID
+        sync: false
+      - key: ANNOTATE_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: ANNOTATE_S3_REGION
+        value: auto
+      - key: ANNOTATE_GITHUB_CLIENT_ID
+        sync: false
+      - key: ANNOTATE_GITHUB_CLIENT_SECRET
+        sync: false
+      - key: ANNOTATE_ALLOWED_GITHUB
+        sync: false # comma-separated GitHub logins
+      - key: ANNOTATE_SESSION_SECRET
+        generateValue: true
+      - key: ANNOTATE_UPLOAD_TOKEN
+        generateValue: true # copy it from the Render dashboard to the capture machine
