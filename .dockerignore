@@ -1,0 +1,16 @@
+# Keep Traces, profiles, secrets and local environments out of every Docker build context.
+.git
+.venv
+.env
+.env.*
+!.env.example
+.evals
+.profile
+.claude
+**/__pycache__
+**/*.pyc
+*.log
+run-*.png
+tests
+docs
+scripts
