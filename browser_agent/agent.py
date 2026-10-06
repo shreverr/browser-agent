@@ -222,11 +222,13 @@ class Agent:
         *,
         client: ChatClient | None = None,
         write: WriteFn = print,
+        start_url: str | None = None,
     ) -> None:
         self.browser = browser
         self._vision_on = VISION
         self._write = write
         self._started = False
+        self._start_url = start_url
         self._invalidated = False
         self._task_interventions: list[str] = []
         system = prompts.SYSTEM + ("\n\n" + prompts.VISION_NOTE if VISION else "")
@@ -250,6 +252,16 @@ class Agent:
         if self._started:
             return
         await self.browser.start()
+        if self._start_url:
+            try:
+                result = await self.browser.execute(
+                    BrowserAction("navigate", arguments={"url": self._start_url})
+                )
+                if result.status is not OutcomeStatus.SUCCEEDED:
+                    raise RuntimeError(f"Could not open startup page: {result.message}")
+            except BaseException:
+                await self.browser.close()
+                raise
         self._started = True
         if self._vision_on:
             self._write(

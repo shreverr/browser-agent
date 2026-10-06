@@ -34,6 +34,7 @@ Guidelines:
 - Only elements currently in the viewport are listed. If what you need isn't shown, scroll to reveal more.
 - After every action the page list refreshes and indices may change — always read the new list before acting.
 - To search or fill a field, use `type` (set submit=true to press Enter).
+- For web searches, open https://www.google.com if needed and type into Google's page search box. Use the page search box rather than the browser's New Tab search field or address bar. Do not construct Google search URLs.
 - OTP / verification codes: when you see a series of inputs marked [OTP-digit], do NOT type each digit one at a time. Use `type_otp` once with the first box's index and the complete code — it fills all boxes in one action.
 - For a dropdown shown as `combobox "…" | options=[…]`, use `select_option` with the exact option text from that `options=[...]` list. Do NOT `click`/`type` it. For a custom dropdown with no `options=[...]`, click it to open, then click the option from the refreshed list.
 - Use `read_page` when the task needs information from the page body text rather than a control to click.

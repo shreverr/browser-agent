@@ -49,9 +49,21 @@ uv run browser-agent "find top post on Hacker News and summarize it"
 ```
 
 Browser is headed by default. Set `HEADLESS=true` for headless operation. Set
+`AGENT_START_URL` to change the startup page (default `https://www.google.com`;
+empty disables startup navigation). Web searches use Google's page search box.
+Set
 `AGENT_BROWSER_EXECUTABLE` when automatic installed-browser discovery should not
 choose browser executable. See [.env.example](.env.example) and
 [operator guide](docs/operator.md) for full configuration and failure behavior.
+
+For a local setup with Fortress and CloakBrowser installed, switch browsers with
+`python3 scripts/switch_browser.py cloakbrowser` or
+`python3 scripts/switch_browser.py fortress`, then restart the agent. The switcher
+reads local installation paths from `.profile/browser-switch/settings.json` and
+selects separate state stores so profiles from different Chromium versions do
+not mix. CloakBrowser uses its upstream stealth launch arguments through a local
+launcher; its `humanize=True` mouse behavior is not part of the nodriver
+integration. Browser downloads and launcher setup remain local and ignored by Git.
 
 ## Behavior
 

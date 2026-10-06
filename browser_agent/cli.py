@@ -16,6 +16,7 @@ from .config import (
     API_KEY,
     BROWSER_EXECUTABLE,
     HEADLESS,
+    START_URL,
     STATE_ENCRYPTION_KEY,
     STATE_ROOT,
 )
@@ -87,7 +88,7 @@ def build_agent() -> Agent:
         ),
         EpisodeMetadata(code_revision="working-tree", platform=sys.platform, task_id="cli"),
     )
-    return Agent(session)
+    return Agent(session, start_url=START_URL)
 
 
 async def ask(question: str, *, input_fn: Callable[[str], str] = input) -> str:

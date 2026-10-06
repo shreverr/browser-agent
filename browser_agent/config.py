@@ -27,6 +27,7 @@ DEBUG_TOKENS = bool(os.environ.get("AGENT_DEBUG_TOKENS"))
 # --- browser ---------------------------------------------------------------
 
 HEADLESS = os.environ.get("HEADLESS") == "true"
+START_URL = os.environ.get("AGENT_START_URL", "https://www.google.com")
 BROWSER_EXECUTABLE = (
     Path(os.environ["AGENT_BROWSER_EXECUTABLE"])
     if os.environ.get("AGENT_BROWSER_EXECUTABLE")
